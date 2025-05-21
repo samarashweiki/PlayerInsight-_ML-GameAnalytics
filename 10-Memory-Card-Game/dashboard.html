@@ -1,0 +1,298 @@
+<!DOCTYPE html>
+<html lang="ar">
+<head>
+  <meta charset="UTF-8" />
+  <title>لوحة تحليل اللاعبين</title>
+  <style>
+    body {
+      font-family: Arial, sans-serif;
+      direction: rtl;
+      padding: 20px;
+      background: #f9f9f9;
+      color: #333;
+    }
+    h1 {
+      text-align: center;
+      margin-bottom: 10px;
+      color: #444;
+    }
+    #average, #cluster-counts {
+      margin: 15px 0;
+      font-weight: bold;
+      text-align: center;
+      font-size: 18px;
+      color: #222;
+    }
+    #recommendation {
+      margin-top: 20px;
+      text-align: center;
+      font-size: 18px;
+      background: #fff3cd;
+      border: 1px solid #ffeeba;
+      padding: 15px;
+      border-radius: 6px;
+    }
+    table {
+      border-collapse: collapse;
+      width: 100%;
+      max-width: 900px;
+      margin: 0 auto;
+      background: white;
+      box-shadow: 0 0 10px rgba(0,0,0,0.1);
+      border-radius: 8px;
+      overflow: hidden;
+    }
+    th, td {
+      border: 1px solid #ccc;
+      padding: 12px 15px;
+      text-align: center;
+      font-size: 15px;
+    }
+    th {
+      background-color: #6563FF;
+      color: white;
+      font-weight: 600;
+    }
+    tbody tr:nth-child(even) {
+      background-color: #f2f2f2;
+    }
+    .cluster-0 {
+      background-color: #d4edda !important;
+    }
+    .cluster-1 {
+      background-color: #f8d7da !important;
+    }
+    .predicted-success {
+      font-weight: bold;
+      color: green;
+    }
+    .predicted-fail {
+      font-weight: bold;
+      color: red;
+    }
+    .back-button, .export-button {
+      display: inline-block;
+      margin: 15px 10px 0;
+      padding: 10px 20px;
+      background-color: #6563FF;
+      color: white;
+      text-decoration: none;
+      border-radius: 6px;
+      font-size: 16px;
+      cursor: pointer;
+      border: none;
+    }
+    #filter-success {
+      margin: 20px auto;
+      display: block;
+      max-width: 200px;
+      font-size: 16px;
+      padding: 8px;
+      border-radius: 6px;
+      border: 1px solid #ccc;
+    }
+  </style>
+</head>
+<body>
+
+  <h1>📊 لوحة تحليل اللاعبين</h1>
+  <p id="average">جارٍ تحميل البيانات...</p>
+  <p id="cluster-counts"></p>
+
+  <select id="filter-success">
+    <option value="all">عرض الكل</option>
+    <option value="success">الناجحون فقط</option>
+    <option value="fail">الفاشلون فقط</option>
+  </select>
+
+  <table>
+    <thead>
+      <tr>
+        <th>رقم اللاعب</th>
+        <th>عدد الحركات</th>
+        <th>الزمن (ثواني)</th>
+        <th>النجاح</th>
+        <th>تاريخ الجلسة</th>
+        <th>المجموعة</th>
+        <th>توقع السلوك</th>
+      </tr>
+    </thead>
+    <tbody id="data-table"></tbody>
+  </table>
+
+  <div id="recommendation">جاري تحليل التوصيات...</div>
+
+  <button class="export-button" id="export-csv">⬇️ تصدير البيانات كـ CSV</button>
+  <a href="index.html" class="back-button">🔙 الرجوع إلى الصفحة الرئيسية</a>
+
+  <script>
+    const tableBody = document.getElementById("data-table");
+    const averageDisplay = document.getElementById("average");
+    const recommendationBox = document.getElementById("recommendation");
+    const filterSelect = document.getElementById("filter-success");
+    const clusterCountsDisplay = document.getElementById("cluster-counts");
+    const exportBtn = document.getElementById("export-csv");
+
+    const data = JSON.parse(localStorage.getItem("playerStats")) || [];
+
+    let totalMoves = 0;
+    let totalTime = 0;
+
+    function distance(p1, p2) {
+      return Math.sqrt((p1[0] - p2[0])**2 + (p1[1] - p2[1])**2);
+    }
+
+    function kMeans(dataPoints, k = 2, maxIter = 10) {
+      if (dataPoints.length === 0) return [];
+
+      let centroids = [];
+      for (let i = 0; i < k; i++) {
+        centroids.push(dataPoints[Math.floor(Math.random() * dataPoints.length)]);
+      }
+
+      let assignments = new Array(dataPoints.length).fill(-1);
+
+      for (let iter = 0; iter < maxIter; iter++) {
+        let changed = false;
+        for (let i = 0; i < dataPoints.length; i++) {
+          let distances = centroids.map(c => distance(dataPoints[i], c));
+          let minIndex = distances.indexOf(Math.min(...distances));
+          if (assignments[i] !== minIndex) {
+            assignments[i] = minIndex;
+            changed = true;
+          }
+        }
+        if (!changed) break;
+
+        for (let j = 0; j < k; j++) {
+          let clusterPoints = dataPoints.filter((_, idx) => assignments[idx] === j);
+          if (clusterPoints.length === 0) continue;
+          let meanX = clusterPoints.reduce((sum, p) => sum + p[0], 0) / clusterPoints.length;
+          let meanY = clusterPoints.reduce((sum, p) => sum + p[1], 0) / clusterPoints.length;
+          centroids[j] = [meanX, meanY];
+        }
+      }
+      return assignments;
+    }
+
+    const points = data.map(p => [p.moves, p.timeTaken]);
+    let clusters = points.length > 0 ? kMeans(points) : [];
+
+    function renderTable(filter = "all") {
+      tableBody.innerHTML = "";
+      totalMoves = 0;
+      totalTime = 0;
+      let predictedSuccessCount = 0;
+      let filteredData = [];
+
+      // فلترة البيانات حسب الاختيار
+      if(filter === "success") {
+        filteredData = data.filter(p => p.success === 1);
+      } else if(filter === "fail") {
+        filteredData = data.filter(p => p.success === 0);
+      } else {
+        filteredData = [...data];
+      }
+
+      let clusterCounts = {0: 0, 1: 0};
+
+      filteredData.forEach((player, i) => {
+        const idx = data.indexOf(player);
+        const clusterIndex = clusters[idx];
+        clusterCounts[clusterIndex] = (clusterCounts[clusterIndex] || 0) + 1;
+
+        const row = document.createElement("tr");
+        const clusterName = clusterIndex === 0 ? "مجموعة سريعة" : "مجموعة بطيئة";
+        row.classList.add(`cluster-${clusterIndex}`);
+
+        const isLikelyToSucceed = player.moves < 50 && player.timeTaken < 60;
+        const predictionText = isLikelyToSucceed ? "✔ متوقع أن ينجح" : "✖ متوقع أن يفشل";
+        const predictionClass = isLikelyToSucceed ? "predicted-success" : "predicted-fail";
+        if (isLikelyToSucceed) predictedSuccessCount++;
+
+        const formattedDate = new Date(player.sessionTime).toLocaleDateString("ar-EG", {
+          year: 'numeric',
+          month: 'long',
+          day: 'numeric',
+          weekday: 'long',
+          hour: '2-digit',
+          minute: '2-digit'
+        });
+
+        row.innerHTML = `
+          <td>${player.playerId}</td>
+          <td>${player.moves}</td>
+          <td>${player.timeTaken}</td>
+          <td>${player.success === 1 ? "✔️" : "❌"}</td>
+          <td>${formattedDate}</td>
+          <td>${clusterName}</td>
+          <td class="${predictionClass}">${predictionText}</td>
+        `;
+
+        totalMoves += player.moves;
+        totalTime += player.timeTaken;
+        tableBody.appendChild(row);
+      });
+
+      if(filteredData.length > 0){
+        const avgMoves = (totalMoves / filteredData.length).toFixed(2);
+        const avgTime = (totalTime / filteredData.length).toFixed(2);
+        averageDisplay.textContent = `متوسط الحركات: ${avgMoves} - متوسط الوقت: ${avgTime} ثانية`;
+
+        clusterCountsDisplay.textContent = `عدد اللاعبين في مجموعة سريعة: ${clusterCounts[0] || 0} - في مجموعة بطيئة: ${clusterCounts[1] || 0}`;
+
+        const successRate = (predictedSuccessCount / filteredData.length) * 100;
+        let recommendation = "";
+
+        if (successRate < 50) {
+          recommendation = "🔧 التوصية: اللعبة صعبة على معظم اللاعبين. حاول تقليل الوقت أو تسهيل الحركات.";
+        } else if (successRate < 80) {
+          recommendation = "📈 التوصية: الأداء جيد، لكن يمكن تحسين التعليمات أو دعم اللاعب عند الفشل.";
+        } else {
+          recommendation = "🎉 التوصية: الأداء ممتاز! استمر بنفس تصميم المستوى.";
+        }
+
+        recommendationBox.textContent = recommendation;
+      } else {
+        averageDisplay.textContent = "لا توجد بيانات بعد.";
+        clusterCountsDisplay.textContent = "";
+        recommendationBox.textContent = "لا توجد توصيات حالياً لعدم توفر بيانات.";
+      }
+    }
+
+    filterSelect.addEventListener("change", () => {
+      renderTable(filterSelect.value);
+    });
+
+    function exportToCSV() {
+      let csvContent = "رقم اللاعب,عدد الحركات,الزمن (ثواني),النجاح,تاريخ الجلسة,المجموعة,توقع السلوك\n";
+      data.forEach((player, i) => {
+        const clusterIndex = clusters[i];
+        const clusterName = clusterIndex === 0 ? "مجموعة سريعة" : "مجموعة بطيئة";
+        const isLikelyToSucceed = player.moves < 50 && player.timeTaken < 60;
+        const predictionText = isLikelyToSucceed ? "متوقع أن ينجح" : "متوقع أن يفشل";
+        const formattedDate = new Date(player.sessionTime).toLocaleString("ar-EG");
+
+        csvContent += `${player.playerId},${player.moves},${player.timeTaken},${player.success === 1 ? "نجاح" : "فشل"},${formattedDate},${clusterName},${predictionText}\n`;
+      });
+
+      const blob = new Blob([csvContent], { type: "text/csv;charset=utf-8;" });
+      const url = URL.createObjectURL(blob);
+      const link = document.createElement("a");
+      link.setAttribute("href", url);
+      link.setAttribute("download", "player_analysis.csv");
+      link.style.visibility = "hidden";
+      document.body.appendChild(link);
+      link.click();
+      document.body.removeChild(link);
+    }
+
+    exportBtn.addEventListener("click", exportToCSV);
+
+    // العرض الأولي
+    renderTable();
+
+  </script>
+
+</body>
+</html>
